@@ -298,7 +298,7 @@ def concat_wavs_with_ffmpeg(chapter_files, output_folder, filename):
         for wav_file in chapter_files:
             f.write(f"file '{wav_file}'\n")
     concat_file_path = Path(output_folder) / filename.replace('.epub', '.tmp.mp4')
-    subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', wav_list_txt, '-c', 'copy', concat_file_path])
+    subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', wav_list_txt, '-c:a', 'libopus', '-b:a', '64k', concat_file_path])
     Path(wav_list_txt).unlink()
     return concat_file_path
 
@@ -313,33 +313,25 @@ def create_m4b(chapter_files, filename, cover_image, output_folder):
         cover_file_path = Path(output_folder) / 'cover'
         with open(cover_file_path, 'wb') as f:
             f.write(cover_image)
-        cover_image_args = [
-            '-i', f'{cover_file_path}',
-            '-map', '2:v',  # Map cover image
-            '-disposition:v', 'attached_pic',  # Ensure cover is embedded
-            '-c:v', 'copy',  # Keep cover unchanged
-        ]
+        cover_image_args = ["-i", f'{cover_file_path}', "-map", "0:a", "-map", "2:v"]
     else:
         cover_image_args = []
 
     proc = subprocess.run([
         'ffmpeg',
-        '-y',  # Overwrite output
-        
-        '-i', f'{concat_file_path}',  # Input audio
-        '-i', f'{chapters_txt_path}',  # Input chapters
-        *cover_image_args,  # Cover image (if provided)
-
-        '-map', '0:a',  # Map audio
-        '-c:a', 'aac',  # Convert to AAC
-        '-b:a', '64k',  # Reduce bitrate for smaller size
-
-        '-map_metadata', '1', # Map metadata
-
-        '-f', 'mp4',  # Output as M4B
-        f'{final_filename}'  # Output file
+        '-y',  # overwrite output file without asking
+        '-i', f'{concat_file_path}',  # input 0 file (audio)
+        '-i', f'{chapters_txt_path}',  # input 1 file (chapters)
+        *cover_image_args,  # cover image
+        '-map', '0',  # map all streams from input 0
+        '-map_metadata', '1',  # map metadata from input 1
+        '-c:a', 'copy',  # copy audio codec
+        '-c:v', 'copy',  # copy video codec
+        '-disposition:v', 'attached_pic',  # attach cover image
+        '-c', 'copy',  # copy codec
+        '-f', 'mp4',  # format
+        f'{final_filename}'  # output file
     ])
-
     Path(concat_file_path).unlink()
     if proc.returncode == 0:
         print(f'{final_filename} created. Enjoy your audiobook.')
