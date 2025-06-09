@@ -7,7 +7,8 @@ import os
 import traceback
 from glob import glob
 
-import torch.cuda
+from unidecode import unidecode
+import torch
 import spacy
 import ebooklib
 import soundfile
@@ -75,6 +76,7 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
     load_spacy()
     if output_folder != '.':
         Path(output_folder).mkdir(parents=True, exist_ok=True)
+    output_folder = Path(output_folder).absolute()
 
     filename = Path(file_path).name
 
@@ -107,13 +109,13 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
     stats = SimpleNamespace(
         total_chars=sum(map(len, texts)),
         processed_chars=0,
-        chars_per_sec=500 if torch.cuda.is_available() else 50)
+        chars_per_sec=500 if (torch.cuda.is_available() or torch.xpu.is_available()) else 50)
     print('Started at:', time.strftime('%H:%M:%S'))
     print(f'Total characters: {stats.total_chars:,}')
     print('Total words:', len(' '.join(texts).split()))
     eta = strfdelta((stats.total_chars - stats.processed_chars) / stats.chars_per_sec)
     print(f'Estimated time remaining (assuming {stats.chars_per_sec} chars/sec): {eta}')
-    set_espeak_library()
+    #set_espeak_library()
     pipeline = KPipeline(lang_code=voice[0])  # a for american or b for british etc.
 
     chapter_wav_files = []
@@ -189,24 +191,55 @@ def print_selected_chapters(document_chapters, chapters):
         for i, c in enumerate(document_chapters, start=1)
     ], headers=['#', 'Chapter', 'Text Length', 'Selected', 'First words']))
 
+def is_audible_text(text):
+    clean_text = re.sub(r'[^a-zA-Z0-9]', '', text)
+    return len(clean_text) > 1
+
+def merge_texts(sentences, max_length):
+    out_sentences = []
+    text = ''
+    for sentence in sentences:
+        sentence = unidecode(sentence)
+        if not is_audible_text(sentence):
+            continue
+        
+        if len(sentence) > max_length:
+            print(f"WARNING: sentence is greater than max length! '{sentence}'")
+            if len(text) > 0:
+                out_sentences.append(text)
+                text = ''
+            out_sentences.append(sentence)
+        elif len(sentence) + len(text) > max_length:
+            out_sentences.append(text)
+            text = sentence.strip()
+        else:
+            text += ' ' + sentence.strip()
+
+    return out_sentences
+
 
 def gen_audio_segments(pipeline, text, voice, speed, stats=None, max_sentences=None, post_event=None):
     nlp = spacy.load('xx_ent_wiki_sm')
     nlp.add_pipe('sentencizer')
     audio_segments = []
     doc = nlp(text)
-    sentences = list(doc.sents)
-    for i, sent in enumerate(sentences):
-        if max_sentences and i > max_sentences: break
-        for gs, ps, audio in pipeline(sent.text, voice=voice, speed=speed, split_pattern=r'\n\n\n'):
-            audio_segments.append(audio)
-        if stats:
-            stats.processed_chars += len(sent.text)
-            stats.progress = stats.processed_chars * 100 // stats.total_chars
-            stats.eta = strfdelta((stats.total_chars - stats.processed_chars) / stats.chars_per_sec)
-            if post_event: post_event('CORE_PROGRESS', stats=stats)
-            print(f'Estimated time remaining: {stats.eta}')
-            print('Progress:', f'{stats.progress}%\n')
+    #sentences = merge_texts(list(doc.sents)[:max_sentences], 500)
+    sentences = list(doc.sents)[:max_sentences]
+    print(sentences)
+    texts = merge_texts([s.text for s in sentences], 500)
+    for gs, ps, audio in pipeline(texts, voice=voice, speed=speed, split_pattern=r'\n\n\n'):
+        audio_segments.append(audio)
+        try:
+            print(f"Graphemes: {gs}, Phonemes: {ps}")
+        except:
+            print("Failed to print graphemes and phonemes...")
+        # if stats:
+        #     stats.processed_chars += len(sent.text)
+        #     stats.progress = stats.processed_chars * 100 // stats.total_chars
+        #     stats.eta = strfdelta((stats.total_chars - stats.processed_chars) / stats.chars_per_sec)
+        #     if post_event: post_event('CORE_PROGRESS', stats=stats)
+        #     print(f'Estimated time remaining: {stats.eta}')
+        #     print('Progress:', f'{stats.progress}%\n')
     return audio_segments
 
 
@@ -293,13 +326,17 @@ def strfdelta(tdelta, fmt='{D:02}d {H:02}h {M:02}m {S:02}s'):
 
 
 def concat_wavs_with_ffmpeg(chapter_files, output_folder, filename):
+    print(output_folder)
+    print(filename)
     wav_list_txt = Path(output_folder) / filename.replace('.epub', '_wav_list.txt')
     with open(wav_list_txt, 'w') as f:
         for wav_file in chapter_files:
+            print(f"file '{wav_file}'")
             f.write(f"file '{wav_file}'\n")
+
     concat_file_path = Path(output_folder) / filename.replace('.epub', '.tmp.mp4')
     subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', wav_list_txt, '-c:a', 'libopus', '-b:a', '64k', concat_file_path])
-    Path(wav_list_txt).unlink()
+    #Path(wav_list_txt).unlink()
     return concat_file_path
 
 
