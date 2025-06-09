@@ -16,6 +16,7 @@ dependencies = [
     "kokoro",
     "misaki[zh]",
     "tabulate",
+    "unidecode",
 ]
 exclude = [
     "imgs",

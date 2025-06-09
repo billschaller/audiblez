@@ -3,30 +3,31 @@
 # audiblez - A program to convert e-books into audiobooks using
 # Kokoro-82M model for high-quality text-to-speech synthesis.
 # by Claudio Santini 2025 - https://claudio.uk
-import os
-import traceback
-from glob import glob
-
-from unidecode import unidecode
-import torch
-import spacy
-import ebooklib
-import soundfile
-import numpy as np
-import time
-import shutil
-import subprocess
 import platform
 import re
+import shutil
+import subprocess
+import time
 from io import StringIO
-from types import SimpleNamespace
-from tabulate import tabulate
 from pathlib import Path
 from string import Formatter
+from types import SimpleNamespace
+
+import ebooklib
+import numpy as np
+import soundfile
+import spacy
+import torch
 from bs4 import BeautifulSoup
-from kokoro import KPipeline
+
+from device import init_and_get_gpu_device
 from ebooklib import epub
+from kokoro import KPipeline
+
 from pick import pick
+from tabulate import tabulate
+
+from unidecode import unidecode
 
 sample_rate = 24000
 
@@ -37,42 +38,20 @@ def load_spacy():
         spacy.cli.download("xx_ent_wiki_sm")
 
 
-def set_espeak_library():
-    """Find the espeak library path"""
-    try:
-
-        if os.environ.get('ESPEAK_LIBRARY'):
-            library = os.environ['ESPEAK_LIBRARY']
-        elif platform.system() == 'Darwin':
-            from subprocess import check_output
-            try:
-                cellar = Path(check_output(["brew", "--cellar"], text=True).strip())
-                pattern = cellar / "espeak-ng" / "*" / "lib" / "*.dylib"
-                if not (library := next(iter(glob(str(pattern))), None)):
-                    raise RuntimeError("No espeak-ng library found; please set the path manually")
-            except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                raise RuntimeError("Cannot locate Homebrew Cellar. Is 'brew' installed and in PATH?") from e
-        elif platform.system() == 'Linux':
-            library = glob('/usr/lib/*/libespeak-ng*')[0]
-        elif platform.system() == 'Windows':
-            library = 'C:\\Program Files*\\eSpeak NG\\libespeak-ng.dll'
-        else:
-            print('Unsupported OS, please set the espeak library path manually')
-            return
-        print('Using espeak library:', library)
-        from phonemizer.backend.espeak.wrapper import EspeakWrapper
-        EspeakWrapper.set_library(library)
-    except Exception:
-        traceback.print_exc()
-        print("Error finding espeak-ng library:")
-        print("Probably you haven't installed espeak-ng.")
-        print("On Mac: brew install espeak-ng")
-        print("On Linux: sudo apt install espeak-ng")
-
-
-def main(file_path, voice, pick_manually, speed, output_folder='.',
-         max_chapters=None, max_sentences=None, selected_chapters=None, post_event=None):
-    if post_event: post_event('CORE_STARTED')
+def main(
+    file_path,
+    voice,
+    pick_manually,
+    speed,
+    output_folder=".",
+    max_chapters=None,
+    max_sentences=None,
+    selected_chapters=None,
+    post_event=None,
+    gpu=False,
+):
+    if post_event:
+        post_event("CORE_STARTED")
     load_spacy()
     if output_folder != '.':
         Path(output_folder).mkdir(parents=True, exist_ok=True)
@@ -114,9 +93,13 @@ def main(file_path, voice, pick_manually, speed, output_folder='.',
     print(f'Total characters: {stats.total_chars:,}')
     print('Total words:', len(' '.join(texts).split()))
     eta = strfdelta((stats.total_chars - stats.processed_chars) / stats.chars_per_sec)
-    print(f'Estimated time remaining (assuming {stats.chars_per_sec} chars/sec): {eta}')
-    #set_espeak_library()
-    pipeline = KPipeline(lang_code=voice[0])  # a for american or b for british etc.
+    print(f"Estimated time remaining (assuming {stats.chars_per_sec} chars/sec): {eta}")
+    device = "cpu"
+    if gpu:
+        device = init_and_get_gpu_device()
+    pipeline = KPipeline(
+        lang_code=voice[0], device=device
+    )  # a for american or b for british etc.
 
     chapter_wav_files = []
     for i, chapter in enumerate(selected_chapters, start=1):
@@ -243,9 +226,12 @@ def gen_audio_segments(pipeline, text, voice, speed, stats=None, max_sentences=N
     return audio_segments
 
 
-def gen_text(text, voice='af_heart', output_file='text.wav', speed=1, play=False):
+def gen_text(text, voice='af_heart', output_file='text.wav', speed=1, play=False, gpu=False):
     lang_code = voice[:1]
-    pipeline = KPipeline(lang_code=lang_code)
+    device = "cpu"
+    if gpu:
+        device = init_and_get_gpu_device()
+    pipeline = KPipeline(lang_code=lang_code, device=device)
     load_spacy()
     audio_segments = gen_audio_segments(pipeline, text, voice=voice, speed=speed);
     final_audio = np.concatenate(audio_segments)
